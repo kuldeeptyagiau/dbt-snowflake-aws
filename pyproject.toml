@@ -1,0 +1,8 @@
+[project]
+name = "dbt_snowflake_aws"
+version = "1.0.0"
+description = "A dbt project for Snowflake data transformations"
+dependencies = [
+    "dbt-core>=1.5.0",
+    "dbt-snowflake>=1.5.0",
+]
