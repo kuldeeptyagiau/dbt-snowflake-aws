@@ -1,0 +1,9 @@
+version: 2
+
+models:
+ - name: stg_dbt_first
+   columns:
+     - name: HASH_KEY
+       tests:
+         -  unique
+         - not_null

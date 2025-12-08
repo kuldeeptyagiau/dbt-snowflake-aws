@@ -31,12 +31,26 @@ dbt --version   (Makre sure you have source your .venv to activate it)
 3. commit both .toml and .lock file in repo
 
 
-
-
 ### Using the starter project
 Try running the following commands:
 - dbt run
 - dbt test
+- dbt run -m stg_dbt_first
+- dbt run -m stg_dbt_first --full-refresh
+- dbt source freshness
+- dbt source freshness --debug
+- dbt test --debug
+
+
+## install extension
+1. Power User for dbt
+2. make sure to select python interpreter from .venv file (use Ctrl+Shift+P to change interpreter)
+3. make sure dbt core is tick marked in bottom left corner
+- Snowflake Extension for Visual Studio Code (https://docs.snowflake.com/en/user-guide/vscode-ext)
+
+
+
+
 
 
 ### Resources:
@@ -45,7 +59,3 @@ Try running the following commands:
 - Join the [chat](https://community.getdbt.com/) on Slack for live discussions and support
 - Find [dbt events](https://events.getdbt.com) near you
 - Check out [the blog](https://blog.getdbt.com/) for the latest news on dbt's development and best practices
-
-
-
-
