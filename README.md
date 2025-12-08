@@ -59,3 +59,17 @@ Try running the following commands:
 - Join the [chat](https://community.getdbt.com/) on Slack for live discussions and support
 - Find [dbt events](https://events.getdbt.com) near you
 - Check out [the blog](https://blog.getdbt.com/) for the latest news on dbt's development and best practices
+
+
+## MSSQl Docker
+- docker-compose up -d
+- install extension for vs code -> SQL Server (mssql)
+- Connect with sql server
+-  Server name: localhost,1433 Authentication: SQL Server Authentication Login: sa Password: YourStrong!Passw0rd
+   note: localhost is usually, 127.0.0.1
+
+## Switch Snowflake and MSSQL for query execution
+Language Mode" Identification
+VS Code has a "Language Mode" which defines how the editor applies syntax highlighting, linting, and auto-completion.
+Open a .sql file.
+Click on the language name in the bottom-right corner of the status bar (it usually says "SQL" or "MSSQL" or Snowflake SQL).
