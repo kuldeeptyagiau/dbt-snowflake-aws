@@ -1,6 +1,7 @@
 USE TestData;
 GO
 
+select * from sales
 
 -- Example 1: ROW_NUMBER() — Top sale per department
 SELECT *
@@ -62,3 +63,5 @@ SELECT order_date,
            ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
        ) AS moving_avg_3
 FROM sales;
+
+
