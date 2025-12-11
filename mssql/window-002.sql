@@ -3,7 +3,27 @@ GO
 
 select * from sales
 
+select null
+-- This is now the de-facto standard for top-N-per-group.
+WITH RankedOrders AS (
+    SELECT *,
+           ROW_NUMBER() OVER (
+               PARTITION BY department
+               ORDER BY amount DESC
+           ) AS rn
+    FROM sales
+)
+SELECT *
+FROM RankedOrders
+WHERE rn <= 3;
+
+SELECT DATEADD(DAY, -1, GETDATE()) , DATEADD(DAY, -1, CAST(GETDATE() AS DATE));
+go
+
 -- Example 1: ROW_NUMBER() — Top sale per department
+
+SET SHOWPLAN_ALL ON;
+GO
 SELECT *
 FROM (
     SELECT *,
@@ -12,10 +32,15 @@ FROM (
 ) t
 WHERE rn > 1;
 
+SET SHOWPLAN_ALL OFF;
+GO
+
 -- Example 2: RANK() — Rank sales per department
+SET STATISTICS PROFILE ON;
 SELECT *,
        RANK() OVER (PARTITION BY department ORDER BY amount DESC) AS rnk
 FROM sales;
+SET STATISTICS PROFILE OFF;
 
 -- Example 3: DENSE_RANK() — Dense rank per department
 SELECT *,
@@ -23,6 +48,11 @@ SELECT *,
 FROM sales;
 
 -- Example 4: SUM() OVER() — Running total of sales
+
+select sum(amount) from sales
+-- Using SUM as window function (with the OVER clause), does not reduce the no of records. Please note it’s not mandatory to use ORDER BY or PARTITION BY inside the OVER clause
+select sum(amount) over ()from sales
+
 SELECT order_id,
        amount,
        SUM(amount) OVER (ORDER BY order_date) AS running_total
