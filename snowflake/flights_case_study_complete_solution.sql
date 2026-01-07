@@ -1,0 +1,419 @@
+-- FLIGHTS CASE STUDY - COMPLETE SOLUTION
+-- =====================================
+-- Interview Assignment Implementation
+-- Target: RECRUITMENT_DB.CANDIDATE_00395 schema
+
+USE DATABASE RECRUITMENT_DB;
+USE SCHEMA CANDIDATE_00395;
+
+-- ====================
+-- 1. DATA LOADING SETUP
+-- ====================
+
+-- Create file format for loading
+CREATE OR REPLACE FILE FORMAT "pipe_delimited_format"
+TYPE = 'CSV'
+FIELD_DELIMITER = '|'
+SKIP_HEADER = 1
+PARSE_HEADER = TRUE
+ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
+ENCODING = 'UTF8';
+
+-- ====================
+-- 2. STAGING TABLE (Raw Data Load)
+-- ====================
+
+CREATE OR REPLACE TABLE "STAGING_FLIGHTS_RAW" (
+    "TRANSACTIONID" VARCHAR(50),
+    "FLIGHTDATE" VARCHAR(20),
+    "AIRLINECODE" VARCHAR(10),
+    "AIRLINENAME" VARCHAR(200),
+    "TAILNUM" VARCHAR(20),
+    "FLIGHTNUM" VARCHAR(20),
+    "ORIGINAIRPORTCODE" VARCHAR(10),
+    "ORIGAIRPORTNAME" VARCHAR(200),
+    "ORIGINCITYNAME" VARCHAR(100),
+    "ORIGINSTATE" VARCHAR(5),
+    "ORIGINSTATENAME" VARCHAR(50),
+    "DESTAIRPORTCODE" VARCHAR(10),
+    "DESTAIRPORTNAME" VARCHAR(200),
+    "DESTCITYNAME" VARCHAR(100),
+    "DESTSTATE" VARCHAR(5),
+    "DESTSTATENAME" VARCHAR(50),
+    "CRSDEPTIME" VARCHAR(10),
+    "DEPTIME" VARCHAR(10),
+    "DEPDELAY" VARCHAR(10),
+    "TAXIOUT" VARCHAR(10),
+    "WHEELSOFF" VARCHAR(10),
+    "WHEELSON" VARCHAR(10),
+    "TAXIIN" VARCHAR(10),
+    "CRSARRTIME" VARCHAR(10),
+    "ARRTIME" VARCHAR(10),
+    "ARRDELAY" VARCHAR(10),
+    "CRSELAPSEDTIME" VARCHAR(10),
+    "ACTUALELAPSEDTIME" VARCHAR(10),
+    "CANCELLED" VARCHAR(10),
+    "DIVERTED" VARCHAR(10),
+    "DISTANCE" VARCHAR(20),
+    "LOAD_TIMESTAMP" TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- Load raw data
+COPY INTO "STAGING_FLIGHTS_RAW"
+FROM @RECRUITMENT_DB.PUBLIC.S3_FOLDER/flights.gz
+FILE_FORMAT = "pipe_delimited_format"
+MATCH_BY_COLUMN_NAME = CASE_SENSITIVE
+ON_ERROR = 'CONTINUE'
+ERROR_LIMIT = 100;
+
+-- Verify load
+SELECT COUNT(*) AS "TOTAL_ROWS_LOADED" FROM "STAGING_FLIGHTS_RAW";
+
+-- ====================
+-- 3. DIMENSION TABLES
+-- ====================
+
+-- DIM_AIRLINE: Clean airline data
+CREATE OR REPLACE TABLE "DIM_AIRLINE" AS
+SELECT DISTINCT
+    "AIRLINECODE" AS "AIRLINECODE",
+    -- Clean airline name by removing code prefix
+    CASE 
+        WHEN "AIRLINENAME" LIKE '%:%' 
+        THEN TRIM(SPLIT_PART("AIRLINENAME", ':', 2))
+        ELSE TRIM("AIRLINENAME")
+    END AS "AIRLINENAME"
+FROM "STAGING_FLIGHTS_RAW"
+WHERE "AIRLINECODE" IS NOT NULL
+  AND TRIM("AIRLINECODE") != '';
+
+-- DIM_AIRPORT: Combine origin and destination airports
+CREATE OR REPLACE TABLE "DIM_AIRPORT" AS
+WITH airport_data AS (
+    -- Origin airports
+    SELECT DISTINCT
+        "ORIGINAIRPORTCODE" AS "AIRPORTCODE",
+        -- Clean airport name by removing city/state suffix
+        CASE 
+            WHEN "ORIGAIRPORTNAME" LIKE '%:%' 
+            THEN TRIM(SPLIT_PART("ORIGAIRPORTNAME", ':', 2))
+            ELSE TRIM("ORIGAIRPORTNAME")
+        END AS "AIRPORTNAME",
+        "ORIGINCITYNAME" AS "CITYNAME",
+        "ORIGINSTATE" AS "STATE",
+        "ORIGINSTATENAME" AS "STATENAME"
+    FROM "STAGING_FLIGHTS_RAW"
+    WHERE "ORIGINAIRPORTCODE" IS NOT NULL
+    
+    UNION
+    
+    -- Destination airports
+    SELECT DISTINCT
+        "DESTAIRPORTCODE" AS "AIRPORTCODE",
+        -- Clean airport name by removing city/state suffix
+        CASE 
+            WHEN "DESTAIRPORTNAME" LIKE '%:%' 
+            THEN TRIM(SPLIT_PART("DESTAIRPORTNAME", ':', 2))
+            ELSE TRIM("DESTAIRPORTNAME")
+        END AS "AIRPORTNAME",
+        "DESTCITYNAME" AS "CITYNAME",
+        "DESTSTATE" AS "STATE",
+        "DESTSTATENAME" AS "STATENAME"
+    FROM "STAGING_FLIGHTS_RAW"
+    WHERE "DESTAIRPORTCODE" IS NOT NULL
+)
+SELECT DISTINCT
+    "AIRPORTCODE",
+    "AIRPORTNAME",
+    "CITYNAME",
+    "STATE",
+    "STATENAME"
+FROM airport_data
+WHERE TRIM("AIRPORTCODE") != '';
+
+-- DIM_DATE: Create date dimension
+CREATE OR REPLACE TABLE "DIM_DATE" AS
+WITH date_range AS (
+    SELECT DISTINCT 
+        TRY_CAST("FLIGHTDATE" AS DATE) AS "FLIGHT_DATE"
+    FROM "STAGING_FLIGHTS_RAW"
+    WHERE TRY_CAST("FLIGHTDATE" AS DATE) IS NOT NULL
+)
+SELECT 
+    "FLIGHT_DATE",
+    YEAR("FLIGHT_DATE") AS "YEAR",
+    MONTH("FLIGHT_DATE") AS "MONTH",
+    MONTHNAME("FLIGHT_DATE") AS "MONTH_NAME",
+    DAY("FLIGHT_DATE") AS "DAY",
+    DAYNAME("FLIGHT_DATE") AS "DAY_NAME",
+    DAYOFWEEK("FLIGHT_DATE") AS "DAY_OF_WEEK",
+    WEEKOFYEAR("FLIGHT_DATE") AS "WEEK_OF_YEAR",
+    QUARTER("FLIGHT_DATE") AS "QUARTER"
+FROM date_range
+ORDER BY "FLIGHT_DATE";
+
+-- ====================
+-- 4. FACT TABLE WITH BUSINESS LOGIC
+-- ====================
+
+CREATE OR REPLACE TABLE "FACT_FLIGHTS" AS
+SELECT 
+    "TRANSACTIONID",
+    TRY_CAST("FLIGHTDATE" AS DATE) AS "FLIGHTDATE",
+    "AIRLINECODE",
+    "TAILNUM",
+    TRY_CAST("FLIGHTNUM" AS INTEGER) AS "FLIGHTNUM",
+    "ORIGINAIRPORTCODE",
+    "DESTAIRPORTCODE",
+    
+    -- Time fields (convert HHMM to TIME)
+    TRY_CAST(
+        CASE 
+            WHEN LENGTH("CRSDEPTIME") <= 4 AND "CRSDEPTIME" IS NOT NULL
+            THEN TIME_FROM_PARTS(
+                FLOOR(TRY_CAST("CRSDEPTIME" AS INTEGER) / 100),
+                MOD(TRY_CAST("CRSDEPTIME" AS INTEGER), 100),
+                0
+            )
+        END AS TIME
+    ) AS "CRSDEPTIME",
+    
+    TRY_CAST(
+        CASE 
+            WHEN LENGTH("DEPTIME") <= 4 AND "DEPTIME" IS NOT NULL
+            THEN TIME_FROM_PARTS(
+                FLOOR(TRY_CAST("DEPTIME" AS INTEGER) / 100),
+                MOD(TRY_CAST("DEPTIME" AS INTEGER), 100),
+                0
+            )
+        END AS TIME
+    ) AS "DEPTIME",
+    
+    TRY_CAST(
+        CASE 
+            WHEN LENGTH("ARRTIME") <= 4 AND "ARRTIME" IS NOT NULL
+            THEN TIME_FROM_PARTS(
+                FLOOR(TRY_CAST("ARRTIME" AS INTEGER) / 100),
+                MOD(TRY_CAST("ARRTIME" AS INTEGER), 100),
+                0
+            )
+        END AS TIME
+    ) AS "ARRTIME",
+    
+    TRY_CAST(
+        CASE 
+            WHEN LENGTH("CRSARRTIME") <= 4 AND "CRSARRTIME" IS NOT NULL
+            THEN TIME_FROM_PARTS(
+                FLOOR(TRY_CAST("CRSARRTIME" AS INTEGER) / 100),
+                MOD(TRY_CAST("CRSARRTIME" AS INTEGER), 100),
+                0
+            )
+        END AS TIME
+    ) AS "CRSARRTIME",
+    
+    -- Delay fields
+    TRY_CAST("DEPDELAY" AS INTEGER) AS "DEPDELAY",
+    TRY_CAST("ARRDELAY" AS INTEGER) AS "ARRDELAY",
+    TRY_CAST("TAXIOUT" AS INTEGER) AS "TAXIOUT",
+    TRY_CAST("TAXIIN" AS INTEGER) AS "TAXIIN",
+    
+    -- Time fields for wheels off/on
+    TRY_CAST(
+        CASE 
+            WHEN LENGTH("WHEELSOFF") <= 4 AND "WHEELSOFF" IS NOT NULL
+            THEN TIME_FROM_PARTS(
+                FLOOR(TRY_CAST("WHEELSOFF" AS INTEGER) / 100),
+                MOD(TRY_CAST("WHEELSOFF" AS INTEGER), 100),
+                0
+            )
+        END AS TIME
+    ) AS "WHEELSOFF",
+    
+    TRY_CAST(
+        CASE 
+            WHEN LENGTH("WHEELSON") <= 4 AND "WHEELSON" IS NOT NULL
+            THEN TIME_FROM_PARTS(
+                FLOOR(TRY_CAST("WHEELSON" AS INTEGER) / 100),
+                MOD(TRY_CAST("WHEELSON" AS INTEGER), 100),
+                0
+            )
+        END AS TIME
+    ) AS "WHEELSON",
+    
+    -- Duration fields
+    TRY_CAST("CRSELAPSEDTIME" AS INTEGER) AS "CRSELAPSEDTIME",
+    TRY_CAST("ACTUALELAPSEDTIME" AS INTEGER) AS "ACTUALELAPSEDTIME",
+    
+    -- Status fields (standardize boolean values)
+    CASE 
+        WHEN UPPER(TRIM("CANCELLED")) IN ('TRUE', '1', 'T', 'Y', 'YES') THEN 1
+        ELSE 0
+    END AS "CANCELLED",
+    
+    CASE 
+        WHEN UPPER(TRIM("DIVERTED")) IN ('TRUE', '1', 'T', 'Y', 'YES') THEN 1
+        ELSE 0
+    END AS "DIVERTED",
+    
+    -- Distance (clean numeric value)
+    TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) AS "DISTANCE",
+    
+    -- REQUIRED BUSINESS LOGIC COLUMNS:
+    
+    -- 1. DISTANCEGROUP: Distance bins in 100-mile increments
+    CASE 
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 100 THEN '0-100 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 200 THEN '101-200 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 300 THEN '201-300 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 400 THEN '301-400 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 500 THEN '401-500 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 600 THEN '501-600 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 700 THEN '601-700 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 800 THEN '701-800 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 900 THEN '801-900 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) <= 1000 THEN '901-1000 miles'
+        WHEN TRY_CAST(REGEXP_SUBSTR("DISTANCE", '\\d+') AS INTEGER) > 1000 THEN '1000+ miles'
+        ELSE 'Unknown'
+    END AS "DISTANCEGROUP",
+    
+    -- 2. DEPDELAYGT15: Departure delay > 15 minutes indicator
+    CASE 
+        WHEN TRY_CAST("DEPDELAY" AS INTEGER) > 15 THEN 1
+        ELSE 0
+    END AS "DEPDELAYGT15",
+    
+    -- 3. NEXTDAYARR: Next day arrival indicator
+    CASE 
+        WHEN TRY_CAST("ARRTIME" AS TIME) < TRY_CAST("DEPTIME" AS TIME) 
+             AND "ARRTIME" IS NOT NULL 
+             AND "DEPTIME" IS NOT NULL THEN 1
+        ELSE 0
+    END AS "NEXTDAYARR",
+    
+    -- Metadata
+    "LOAD_TIMESTAMP"
+    
+FROM "STAGING_FLIGHTS_RAW"
+WHERE "TRANSACTIONID" IS NOT NULL;
+
+-- ====================
+-- 5. FINAL VIEW FOR TABLEAU
+-- ====================
+
+CREATE OR REPLACE VIEW "VW_FLIGHTS" AS
+SELECT 
+    -- Core identifiers
+    f."TRANSACTIONID",
+    f."FLIGHTDATE",
+    f."TAILNUM",
+    f."FLIGHTNUM",
+    
+    -- Airline information (cleaned)
+    f."AIRLINECODE",
+    a."AIRLINENAME",
+    
+    -- Airport information (cleaned)
+    f."ORIGINAIRPORTCODE",
+    orig."AIRPORTNAME" AS "ORIGAIRPORTNAME",
+    orig."CITYNAME" AS "ORIGINCITYNAME",
+    orig."STATE" AS "ORIGINSTATE",
+    orig."STATENAME" AS "ORIGINSTATENAME",
+    
+    f."DESTAIRPORTCODE", 
+    dest."AIRPORTNAME" AS "DESTAIRPORTNAME",
+    dest."CITYNAME" AS "DESTCITYNAME",
+    dest."STATE" AS "DESTSTATE",
+    dest."STATENAME" AS "DESTSTATENAME",
+    
+    -- Time information
+    f."CRSDEPTIME",
+    f."DEPTIME", 
+    f."CRSARRTIME",
+    f."ARRTIME",
+    f."WHEELSOFF",
+    f."WHEELSON",
+    
+    -- Delays and performance
+    f."DEPDELAY",
+    f."ARRDELAY", 
+    f."TAXIOUT",
+    f."TAXIIN",
+    f."CRSELAPSEDTIME",
+    f."ACTUALELAPSEDTIME",
+    
+    -- Status
+    f."CANCELLED",
+    f."DIVERTED",
+    f."DISTANCE",
+    
+    -- REQUIRED BUSINESS LOGIC COLUMNS
+    f."DISTANCEGROUP",
+    f."DEPDELAYGT15", 
+    f."NEXTDAYARR",
+    
+    -- Date dimension attributes
+    d."YEAR",
+    d."MONTH",
+    d."MONTH_NAME", 
+    d."DAY",
+    d."DAY_NAME",
+    d."DAY_OF_WEEK",
+    d."WEEK_OF_YEAR",
+    d."QUARTER",
+    
+    -- Calculated KPIs
+    CASE 
+        WHEN f."CANCELLED" = 1 THEN 'Cancelled'
+        WHEN f."DIVERTED" = 1 THEN 'Diverted' 
+        WHEN f."DEPDELAYGT15" = 1 THEN 'Delayed'
+        WHEN f."DEPDELAY" < 0 THEN 'Early'
+        ELSE 'On Time'
+    END AS "FLIGHT_STATUS",
+    
+    CASE 
+        WHEN f."DISTANCE" <= 500 THEN 'Short Haul'
+        WHEN f."DISTANCE" <= 1500 THEN 'Medium Haul'
+        ELSE 'Long Haul'
+    END AS "FLIGHT_TYPE"
+    
+FROM "FACT_FLIGHTS" f
+LEFT JOIN "DIM_AIRLINE" a ON f."AIRLINECODE" = a."AIRLINECODE"
+LEFT JOIN "DIM_AIRPORT" orig ON f."ORIGINAIRPORTCODE" = orig."AIRPORTCODE" 
+LEFT JOIN "DIM_AIRPORT" dest ON f."DESTAIRPORTCODE" = dest."AIRPORTCODE"
+LEFT JOIN "DIM_DATE" d ON f."FLIGHTDATE" = d."FLIGHT_DATE";
+
+-- ====================
+-- 6. DATA QUALITY CHECKS
+-- ====================
+
+-- Check row counts
+SELECT 
+    'STAGING_FLIGHTS_RAW' AS "TABLE_NAME", COUNT(*) AS "ROW_COUNT" FROM "STAGING_FLIGHTS_RAW"
+UNION ALL
+SELECT 'FACT_FLIGHTS', COUNT(*) FROM "FACT_FLIGHTS"  
+UNION ALL
+SELECT 'DIM_AIRLINE', COUNT(*) FROM "DIM_AIRLINE"
+UNION ALL  
+SELECT 'DIM_AIRPORT', COUNT(*) FROM "DIM_AIRPORT"
+UNION ALL
+SELECT 'DIM_DATE', COUNT(*) FROM "DIM_DATE"
+UNION ALL
+SELECT 'VW_FLIGHTS', COUNT(*) FROM "VW_FLIGHTS";
+
+-- Data quality summary for presentation
+SELECT 
+    'Data Quality Summary' AS "REPORT_TYPE",
+    COUNT(*) AS "TOTAL_FLIGHTS",
+    SUM("CANCELLED") AS "CANCELLED_FLIGHTS",
+    SUM("DEPDELAYGT15") AS "SIGNIFICANTLY_DELAYED", 
+    SUM("NEXTDAYARR") AS "NEXT_DAY_ARRIVALS",
+    COUNT(DISTINCT "AIRLINECODE") AS "UNIQUE_AIRLINES",
+    COUNT(DISTINCT "ORIGINAIRPORTCODE") AS "UNIQUE_AIRPORTS",
+    MIN("FLIGHTDATE") AS "DATE_RANGE_START",
+    MAX("FLIGHTDATE") AS "DATE_RANGE_END"
+FROM "VW_FLIGHTS";
+
+-- Sample data for validation
+SELECT * FROM "VW_FLIGHTS" 
+WHERE "TRANSACTIONID" IN ('4916400', '72600400', '71944600')
+ORDER BY "TRANSACTIONID";
